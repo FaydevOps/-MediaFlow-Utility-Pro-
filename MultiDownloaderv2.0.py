@@ -8,7 +8,7 @@ import os
 import threading
 import browser_cookie3
 import subprocess
-import sys
+import sys # <-- Importado y necesario para la corrección
 import urllib.request
 import random
 import time
@@ -23,6 +23,20 @@ ctk.set_appearance_mode("Dark")  # Modo Oscuro
 ctk.set_default_color_theme("blue") # Tema principal azul/primary blue
 
 # Definición de funciones auxiliares
+
+def get_base_path():
+    """
+    Retorna la ruta base de los archivos de configuración (proxies.json).
+    Usa el directorio del ejecutable si está compilado, o el directorio del script si es código fuente.
+    """
+    if getattr(sys, 'frozen', False):
+        # Estamos en una aplicación compilada (PyInstaller --onefile)
+        # sys.executable es la ruta del .exe, usamos su directorio
+        return os.path.dirname(sys.executable)
+    else:
+        # Estamos en el script original de Python
+        return os.path.dirname(__file__)
+
 def get_random_user_agent():
     """Retorna un User-Agent aleatorio de la lista"""
     user_agents = [
@@ -193,8 +207,9 @@ def get_platform_config(url):
     return default_config
 
 def load_proxy_list():
-    """Carga la lista de proxies desde un archivo"""
-    proxy_file = os.path.join(os.path.dirname(__file__), "proxies.json")
+    """Carga la lista de proxies desde un archivo (USANDO RUTA PERMANENTE)"""
+    # CORRECCIÓN: Usar la ruta base permanente
+    proxy_file = os.path.join(get_base_path(), "proxies.json")
     if os.path.exists(proxy_file):
         try:
             with open(proxy_file, 'r') as f:
@@ -205,8 +220,9 @@ def load_proxy_list():
     return [], []
 
 def save_proxy_list(http_proxies, socks5_proxies):
-    """Guarda la lista de proxies en un archivo"""
-    proxy_file = os.path.join(os.path.dirname(__file__), "proxies.json")
+    """Guarda la lista de proxies en un archivo (USANDO RUTA PERMANENTE)"""
+    # CORRECCIÓN: Usar la ruta base permanente
+    proxy_file = os.path.join(get_base_path(), "proxies.json")
     proxy_data = {
         'http': http_proxies,
         'socks5': socks5_proxies
@@ -1075,6 +1091,9 @@ def verify_youtube_url(url):
 
 def ensure_latest_ytdlp():
     """Asegura que yt-dlp esté actualizado y configurado correctamente"""
+    # NO USAMOS get_base_path aquí para no guardar archivos .exe junto al ejecutable principal,
+    # sino en el mismo directorio que el script, o en el path. Esto mantiene la simplicidad
+    # ya que yt-dlp.exe es una dependencia externa que se descarga.
     ytdlp_path = os.path.join(os.getcwd(), "yt-dlp.exe")
     ytdlp_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
     
