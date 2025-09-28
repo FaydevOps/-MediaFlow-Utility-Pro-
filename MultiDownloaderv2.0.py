@@ -57,9 +57,13 @@ def get_browser_cookies(url):
     
     for browser_func, browser_name in browsers:
         try:
+            # Intentar obtener las cookies, usando domain_name=None para obtener todas
+            # y luego filtrar si es necesario (browser_cookie3 ya filtra por dominio)
             cookies = browser_func(domain_name=domain)
-            print(f"Usando cookies de {browser_name} para {domain}")
-            return cookies
+            # Asegurarse de que el objeto de cookies no esté vacío antes de retornar
+            if list(cookies):
+                print(f"Usando cookies de {browser_name} para {domain}")
+                return cookies
         except Exception as e:
             continue
     
@@ -99,7 +103,8 @@ def check_video_availability(url):
                     elif 'Video unavailable' in str(e):
                         return False, "Video no disponible"
                     else:
-                        return False, str(e)
+                        # Para errores genéricos de yt-dlp, es mejor elevar la excepción
+                        raise
         except Exception as e:
             return False, str(e)
     return True, None
@@ -108,15 +113,21 @@ def get_platform_config(url):
     """Obtiene la configuración específica para cada plataforma"""
     domain = extract_domain(url)[1:]  # Eliminar el punto inicial
     
-    # Verificar disponibilidad para YouTube
+    # Verificar disponibilidad para YouTube (solo si es YouTube)
     if 'youtube.com' in domain or 'youtu.be' in domain:
-        available, error_msg = check_video_availability(url)
-        if not available:
-            raise Exception(f"Error de YouTube: {error_msg}")
+        try:
+            available, error_msg = check_video_availability(url)
+            if not available:
+                # Elevar la excepción para que sea capturada en download_video
+                raise Exception(f"Error de YouTube: {error_msg}")
+        except Exception as e:
+             # Si check_video_availability eleva una excepción (como 'Video privado'), la volvemos a elevar
+             raise e
     
     # Configuraciones específicas por plataforma
     platform_configs = {
         'youtube.com': {
+            # Se usa 'best' como base, pero la lógica de formato en download_video lo refinará
             'format_preference': ['bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'],
             'cookies_required': True,
             'user_agent_required': True,
@@ -231,12 +242,14 @@ def get_proxies_from_api(proxy_type='http', timeout=10000, country='all', ssl='a
         }
         
         print(f"🔍 Obteniendo proxies de la API...")
+        # Usamos timeout: 30 segundos
         response = requests.get(url, params=params, headers=headers, timeout=30)
         
         if response.status_code == 200:
             proxies_text = response.text.strip()
             if proxies_text:
                 proxies = [p.strip() for p in proxies_text.split('\n') if p.strip()]
+                # Filtrar solo por el tipo solicitado si la API lo permite, o simplemente devolver la lista
                 print(f"✅ Obtenidos {len(proxies)} proxies de la API")
                 return proxies
             else:
@@ -261,19 +274,7 @@ def get_random_proxy(proxy_type='http'):
     elif proxy_type == 'socks5' and socks5_proxies:
         return random.choice(socks5_proxies)
     
-    # Si no hay proxies locales, obtener de la API
-    print("📡 No hay proxies locales, obteniendo de la API...")
-    api_proxies = get_proxies_from_api(proxy_type)
-    
-    if api_proxies:
-        # Guardar los nuevos proxies para uso futuro
-        if proxy_type == 'http':
-            save_proxy_list(api_proxies, socks5_proxies)
-        else:
-            save_proxy_list(http_proxies, api_proxies)
-        
-        return random.choice(api_proxies)
-    
+    # Si no hay proxies locales, retornamos None. La lógica de auto-fetch se maneja en el GUI
     return None
 
 def test_proxy(proxy, proxy_type='http', test_url='http://httpbin.org/ip'):
@@ -283,9 +284,11 @@ def test_proxy(proxy, proxy_type='http', test_url='http://httpbin.org/ip'):
         if proxy_type == 'http':
             proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
         elif proxy_type == 'socks5':
+            # Nota: Requests requiere la librería PySocks para SOCKS5
             proxies = {'http': f'socks5://{proxy}', 'https': f'socks5://{proxy}'}
         
-        response = requests.get(test_url, proxies=proxies, timeout=10)
+        # Timeout más corto para pruebas
+        response = requests.get(test_url, proxies=proxies, timeout=8)
         return response.status_code == 200
     except:
         return False
@@ -491,13 +494,15 @@ class MultiDownloaderGUI:
             working_socks5 = []
             
             # Testear solo los primeros 10 para no tardar mucho
-            for proxy in http_proxies[:10]:  
-                if test_proxy(proxy, 'http'):
-                    working_http.append(proxy)
+            proxies_to_test = http_proxies[:10] + socks5_proxies[:10]
             
-            for proxy in socks5_proxies[:10]:
-                if test_proxy(proxy, 'socks5'):
-                    working_socks5.append(proxy)
+            for proxy in proxies_to_test:  
+                proxy_type = 'http' if proxy in http_proxies else 'socks5'
+                if test_proxy(proxy, proxy_type):
+                    if proxy_type == 'http':
+                        working_http.append(proxy)
+                    else:
+                        working_socks5.append(proxy)
             
             save_proxy_list(working_http, working_socks5)
             total_working = len(working_http) + len(working_socks5)
@@ -563,12 +568,28 @@ class MultiDownloaderGUI:
         """Actualiza la barra de progreso durante la descarga"""
         if d['status'] == 'downloading':
             try:
-                percent = d['_percent_str']
-                percent = float(percent.replace('%', ''))
-                self.progress_bar["value"] = percent
-                self.status_label.configure(text=f"Descargando: {percent:.1f}%")
-            except:
+                # yt-dlp proporciona un diccionario d con el progreso
+                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+                downloaded_bytes = d.get('downloaded_bytes')
+                
+                if total_bytes and downloaded_bytes:
+                    percent = (downloaded_bytes / total_bytes) * 100
+                    self.progress_bar["value"] = percent
+                    # También podemos usar la cadena de progreso de yt-dlp si está disponible
+                    speed = d.get('_speed_str', '')
+                    eta = d.get('_eta_str', '')
+                    self.status_label.configure(text=f"Descargando: {percent:.1f}% @ {speed} ETA: {eta}")
+                elif '_percent_str' in d:
+                    # Fallback si las métricas de bytes no están disponibles (p.e. antes de empezar)
+                    percent_str = d['_percent_str'].replace('%', '')
+                    percent = float(percent_str) if percent_str.replace('.', '', 1).isdigit() else 0
+                    self.progress_bar["value"] = percent
+                    self.status_label.configure(text=f"Descargando: {d['_percent_str']}")
+
+            except Exception as e:
+                # Evitar que errores de parseo detengan el progreso
                 pass
+
         elif d['status'] == 'finished':
             self.status_label.configure(text="Descarga completada. Procesando...")
 
@@ -585,9 +606,6 @@ class MultiDownloaderGUI:
         self.progress_bar["value"] = 0
         self.status_label.configure(text="Iniciando descarga...")
         
-        # Verificar si es solo audio
-        is_audio_only = self.video_format.get() == "none" and self.audio_format.get() != "none"
-        
         # Iniciar descarga en un hilo separado
         thread = threading.Thread(
             target=self.download_video,
@@ -598,7 +616,7 @@ class MultiDownloaderGUI:
                 self.video_format.get(),
                 self.audio_format.get(),
                 True,  # use_browser_cookies
-                is_audio_only,  # audio_only
+                False,  # audio_only
                 False   # video_only
             )
         )
@@ -607,11 +625,14 @@ class MultiDownloaderGUI:
 
     def download_audio_only(self):
         """Descarga solo el audio"""
-        self.download_button.configure(state='disabled')
         url = self.url_entry.get()
         if not url:
             MessageBox.showerror("Error", "Por favor ingresa una URL")
             return
+            
+        self.download_button.configure(state='disabled')
+        self.progress_bar["value"] = 0
+        self.status_label.configure(text="Iniciando descarga de solo audio...")
         
         thread = threading.Thread(
             target=self.download_video,
@@ -620,7 +641,7 @@ class MultiDownloaderGUI:
                 self.output_path.get(),
                 "none",
                 "none",
-                self.audio_format.get(),
+                self.audio_format.get(), # Usar el formato de audio seleccionado
                 True,  # use_browser_cookies
                 True,  # audio_only
                 False  # video_only
@@ -631,11 +652,14 @@ class MultiDownloaderGUI:
 
     def download_video_only(self):
         """Descarga solo el video"""
-        self.download_button.configure(state='disabled')
         url = self.url_entry.get()
         if not url:
             MessageBox.showerror("Error", "Por favor ingresa una URL")
             return
+
+        self.download_button.configure(state='disabled')
+        self.progress_bar["value"] = 0
+        self.status_label.configure(text="Iniciando descarga de solo video...")
         
         thread = threading.Thread(
             target=self.download_video,
@@ -688,16 +712,24 @@ class MultiDownloaderGUI:
         
         # 2. Segundo intento: Verificar si ffmpeg está en el PATH
         try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, check=True)
-            if result.returncode == 0:
-                print("✅ FFmpeg encontrado en el sistema PATH.")
-                return 'ffmpeg'
+            # Usar 'where ffmpeg' en Windows o 'which ffmpeg' en Linux/macOS
+            if sys.platform.startswith('win'):
+                cmd = ['where', 'ffmpeg']
+            else:
+                cmd = ['which', 'ffmpeg']
+                
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            path_from_path = result.stdout.strip().split('\n')[0] # Usar solo el primer resultado
+            if os.path.exists(path_from_path):
+                 print(f"✅ FFmpeg encontrado en el sistema PATH: {path_from_path}")
+                 return path_from_path
         except subprocess.CalledProcessError:
-            print("⚠ 'ffmpeg -version' encontró un error, buscando ruta absoluta.")
-            pass
+             print("❌ 'ffmpeg' no encontrado en el PATH del entorno.")
+             pass
         except FileNotFoundError:
-            print("❌ 'ffmpeg' no encontrado en el PATH del entorno, buscando en rutas comunes.")
-            pass
+             # Esto debería ser raro si se usa 'which' o 'where' correctamente, pero por seguridad
+             print("❌ Comando de búsqueda de ruta (where/which) no encontrado.")
+             pass
 
         # 3. Rutas comunes
         local_appdata_path = os.path.expandvars('%LOCALAPPDATA%')
@@ -706,7 +738,7 @@ class MultiDownloaderGUI:
             os.path.join(os.path.dirname(__file__), "ffmpeg", "bin", "ffmpeg.exe"),
             os.path.join(local_appdata_path, 'Programs', 'ffmpeg', 'bin', 'ffmpeg.exe'),
             r"C:\ffmpeg\bin\ffmpeg.exe",
-            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe", 
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
             r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
         ]
         
@@ -720,10 +752,12 @@ class MultiDownloaderGUI:
             "ERROR: FFmpeg no se encontró en el sistema. Es necesario para conversiones.\n\n"
             "Por favor, instálalo o usa el botón 'Seleccionar .exe' para localizar tu 'ffmpeg.exe'."
         ))
-        raise FileNotFoundError("FFmpeg no encontrado. Es necesario para conversiones de audio.")
+        # Generar un error para detener la descarga si es necesaria la conversión
+        raise FileNotFoundError("FFmpeg no encontrado. Es necesario para conversiones de audio/video.")
+
 
     def save_cookies_to_file(self, cookies):
-        """Guarda cookies en un archivo temporal para yt-dlp"""
+        """Guarda cookies en un archivo temporal en formato Netscape para yt-dlp"""
         if not cookies:
             return None
             
@@ -731,16 +765,24 @@ class MultiDownloaderGUI:
         try:
             # Formato Netscape para cookies
             temp_file.write("# Netscape HTTP Cookie File\n")
-            for cookie in cookies:
+            # Usar iter(cookies) para asegurar que funciona con el objeto CookieJar
+            for cookie in iter(cookies): 
                 # Dominio, flag, path, secure, expiration, name, value
-                domain = cookie.domain.lstrip('.')
+                # La bandera es TRUE si el dominio comienza con '.', FALSE si no. yt-dlp/curl requiere esto.
+                domain = cookie.domain
+                domain_prefix = 'TRUE' if domain.startswith('.') else 'FALSE' 
                 secure = "TRUE" if cookie.secure else "FALSE"
                 expiration = str(int(cookie.expires)) if cookie.expires else "0"
-                temp_file.write(f"{domain}\tTRUE\t{cookie.path}\t{secure}\t{expiration}\t{cookie.name}\t{cookie.value}\n")
+                
+                temp_file.write(f"{domain}\t{domain_prefix}\t{cookie.path}\t{secure}\t{expiration}\t{cookie.name}\t{cookie.value}\n")
+                
             temp_file.close()
             return temp_file.name
         except Exception as e:
             print(f"Error guardando cookies: {e}")
+            # Si falla, asegurarse de eliminar el archivo incompleto
+            if os.path.exists(temp_file.name):
+                 os.unlink(temp_file.name)
             return None
 
     def download_video(self, url, output_path, video_resolution, video_format, audio_format, use_browser_cookies, audio_only, video_only):
@@ -749,8 +791,17 @@ class MultiDownloaderGUI:
         current_try = 0
         used_proxies = []
         
+        # Obtener ruta de ffmpeg primero. Eleva FileNotFoundError si es necesario para conversión
+        try:
+            ffmpeg_path = self.get_ffmpeg_path()
+        except FileNotFoundError:
+            # Si no se encuentra FFmpeg y es el primer intento, el error de MessageBox ya se mostró.
+            self.master.after(0, lambda: self.download_button.configure(state='normal'))
+            return
+
         while current_try < max_retries:
             temp_dir = None
+            cookie_file = None
             try:
                 print(f"\n=== INTENTO DE DESCARGA #{current_try + 1} ===")
                 
@@ -762,15 +813,12 @@ class MultiDownloaderGUI:
                 if not os.path.exists(final_output_path):
                     os.makedirs(final_output_path)
 
-                # Obtener ruta de ffmpeg
-                ffmpeg_path = self.get_ffmpeg_path()
-                
                 # Obtener configuración de plataforma
                 platform_config = get_platform_config(url)
                 
                 # Obtener cookies y user agent
-                cookies = get_browser_cookies(url) if use_browser_cookies and platform_config['cookies_required'] else None
-                user_agent = get_random_user_agent() if platform_config['user_agent_required'] else None
+                cookies = get_browser_cookies(url) if use_browser_cookies and platform_config.get('cookies_required', False) else None
+                user_agent = get_random_user_agent() if platform_config.get('user_agent_required', False) else None
                 
                 # CONFIGURACIÓN BASE
                 ydl_opts = {
@@ -783,7 +831,7 @@ class MultiDownloaderGUI:
                     'retries': 10,
                     'fragment_retries': 10,
                     'nocheckcertificate': True,
-                    'ignoreerrors': True,
+                    'ignoreerrors': False, # Cambiado a False para obtener errores detallados
                     'no_warnings': True,
                 }
                 
@@ -791,24 +839,33 @@ class MultiDownloaderGUI:
                 proxy = None
                 if self.use_proxy.get() and platform_config.get('proxy_support', True):
                     proxy_type = self.proxy_type.get()
+                    # Si auto-fetch está activo Y no hay proxies locales, obtener de la API
+                    if self.auto_fetch_proxies.get() and not load_proxy_list()[0] and not load_proxy_list()[1]:
+                        api_proxies = get_proxies_from_api(proxy_type)
+                        if api_proxies:
+                            save_proxy_list(api_proxies, load_proxy_list()[1] if proxy_type == 'http' else api_proxies)
+                    
                     proxy = get_random_proxy(proxy_type)
                     
                     if proxy:
-                        if proxy in used_proxies:
-                            available_proxies = []
-                            for _ in range(5):
-                                new_proxy = get_random_proxy(proxy_type)
-                                if new_proxy and new_proxy not in used_proxies:
-                                    proxy = new_proxy
+                        if proxy in used_proxies and len(used_proxies) < 10: # Límite de 10 reintentos de proxy
+                            available_proxies = load_proxy_list()[0] if proxy_type == 'http' else load_proxy_list()[1]
+                            
+                            # Buscar un proxy no usado
+                            new_proxy = None
+                            for p in available_proxies:
+                                if p not in used_proxies:
+                                    new_proxy = p
                                     break
+                            
+                            proxy = new_proxy if new_proxy else proxy # Si no hay nuevo, usar el último
                         
                         if proxy:
                             used_proxies.append(proxy)
-                            if proxy_type == 'http':
-                                ydl_opts['http_proxy'] = proxy
-                            elif proxy_type == 'socks5':
-                                ydl_opts['socks_proxy'] = proxy
-                            print(f"🔒 Usando proxy: {proxy}")
+                            # Formato de proxy para yt-dlp
+                            proxy_url = f"{proxy_type}://{proxy}"
+                            ydl_opts['proxy'] = proxy_url
+                            print(f"🔒 Usando proxy: {proxy_url}")
                 
                 if user_agent:
                     ydl_opts['http_headers'] = {'User-Agent': user_agent}
@@ -818,46 +875,127 @@ class MultiDownloaderGUI:
                     if cookie_file:
                         ydl_opts['cookiefile'] = cookie_file
                 
-                # ... (CONFIGURACIÓN DE FORMATO) ...
-                if audio_only:
-                    ydl_opts.update({
-                        'format': 'bestaudio/best',
-                        'extractaudio': True,
-                        'audioformat': audio_format if audio_format != "none" else 'mp3',
-                        'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': audio_format if audio_format != "none" else 'mp3','preferredquality': '192',}],
-                        'keepvideo': False,
-                    })
-                elif video_only:
-                    ydl_opts.update({'format': 'bestvideo/best'})
-                else:
-                    ydl_opts.update({'format': 'best[height<=1080]/best[height<=720]/best',})
                 
-                print(f"Configuración: {ydl_opts.get('format')}")
+                # --- Lógica de CONFIGURACIÓN DE FORMATO CORREGIDA (Fix para FFmpegVideoConvertorPP) ---
+                
+                if audio_only:
+                    # Sobrescribir para solo audio si se seleccionó esa opción
+                    audio_codec = audio_format if audio_format != "none" else 'mp3'
+                    ydl_opts.update({
+                        'format': 'bestaudio/best', # Asegura la mejor calidad de audio
+                        'extractaudio': True,
+                        'audioformat': audio_codec,
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': audio_codec,
+                            'preferredquality': '192', # Calidad estándar alta
+                        }],
+                        'keepvideo': False,
+                        'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    })
+                    
+                elif video_only:
+                    # Sobrescribir para solo video si se seleccionó esa opción
+                    video_codec = video_format if video_format != "none" else 'mp4'
+                    
+                    # Formato de video con resolución preferida
+                    res_pref = ""
+                    if video_resolution != "none" and video_resolution != "mejor":
+                        res_val = video_resolution.replace('p', '')
+                        res_pref = f"[height<={res_val}]"
+                        
+                    format_string = f"bestvideo{res_pref}/bestvideo"
+                    
+                    # Solo forzamos el remux si el usuario seleccionó un formato específico (no 'none' o 'mp4')
+                    postprocessors = []
+                    if video_codec != 'none' and video_codec != 'mp4':
+                        postprocessors.append({'key': 'FFmpegVideoRemuxer', 'preferredformat': video_codec})
+                    
+                    ydl_opts.update({
+                        'format': format_string,
+                        'keepvideo': False,
+                        'postprocessors': postprocessors,
+                        'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    })
+                    
+                else: # Modo combinado (Video + Audio)
+                    # 1. Resolución
+                    res_pref = ""
+                    if video_resolution != "none" and video_resolution != "mejor":
+                        res_val = video_resolution.replace('p', '')
+                        res_pref = f"[height<={res_val}]"
+                    
+                    # 2. Formato de Contenedor (ext)
+                    container_format = video_format if video_format != "none" else 'mp4'
+                    
+                    # 3. Construir la cadena de formato
+                    format_string = f"bestvideo{res_pref}+bestaudio/bestvideo{res_pref}/best"
+                    
+                    # 4. Post-procesador para muxear (unir) y remuxear.
+                    postprocessors = []
+                    
+                    # Si el formato es diferente a los formatos más comunes de muxing (none, mp4), 
+                    # forzamos el remux. Si es "mp4" o "none", yt-dlp muxea automáticamente.
+                    if container_format != 'none' and container_format != 'mp4':
+                         postprocessors.append({
+                            'key': 'FFmpegVideoRemuxer', 
+                            'preferredformat': container_format
+                         })
+                    
+                    ydl_opts.update({
+                        'format': format_string,
+                        'postprocessors': postprocessors,
+                        'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    })
+                
+                print(f"Configuración final de 'format': {ydl_opts.get('format')}")
                 
                 # EJECUTAR DESCARGA
+                self.master.after(0, lambda: self.status_label.configure(text="Conectando y obteniendo información..."))
                 with YoutubeDL(ydl_opts) as ydl:
                     info_dict = ydl.extract_info(url, download=True)
                 
                 # --- Lógica: MOVER EL ARCHIVO ---
-                # 4. Encontrar y mover el archivo final
+                # 4. Encontrar el archivo final (puede haber sido remuxeado)
                 moved_files_count = 0
+                final_filename = None
+                
+                # 4a. Buscar el archivo con la extensión correcta en el directorio temporal
+                # Determinar la extensión final esperada
+                expected_ext = ""
+                if audio_only:
+                    expected_ext = audio_format if audio_format != "none" else 'mp3'
+                elif video_only:
+                    expected_ext = video_format if video_format != "none" else 'mp4'
+                else:
+                    expected_ext = video_format if video_format != "none" else 'mp4'
+
                 for filename in os.listdir(temp_dir):
-                    source_path = os.path.join(temp_dir, filename)
-                    if not os.path.isfile(source_path):
-                        continue
-                    
-                    destination_path = os.path.join(final_output_path, filename)
-                    
-                    # Mover el archivo
+                    if filename.endswith(f".{expected_ext}") and os.path.isfile(os.path.join(temp_dir, filename)):
+                         final_filename = filename
+                         break
+                
+                # 4b. Mover el archivo (o todos si no se encontró un solo archivo principal)
+                if final_filename:
+                    source_path = os.path.join(temp_dir, final_filename)
+                    destination_path = os.path.join(final_output_path, final_filename)
                     shutil.move(source_path, destination_path)
-                    moved_files_count += 1
+                    moved_files_count = 1
+                else:
+                    # Fallback: mover todos los archivos generados si no se pudo identificar uno
+                    for filename in os.listdir(temp_dir):
+                        source_path = os.path.join(temp_dir, filename)
+                        if os.path.isfile(source_path):
+                            destination_path = os.path.join(final_output_path, filename)
+                            shutil.move(source_path, destination_path)
+                            moved_files_count += 1
                 
                 print(f"✅ Se movieron {moved_files_count} archivos de {temp_dir} a {final_output_path}")
 
                 # Éxito y limpieza
-                if 'cookiefile' in ydl_opts and os.path.exists(ydl_opts['cookiefile']):
+                if cookie_file and os.path.exists(cookie_file):
                     try:
-                        os.unlink(ydl_opts['cookiefile'])
+                        os.unlink(cookie_file)
                     except:
                         pass
                 
@@ -874,33 +1012,37 @@ class MultiDownloaderGUI:
                 error_msg = str(e)
                 print(f"❌ Error en intento {current_try + 1}: {error_msg}")
                 
-                # Limpiar carpeta temporal si ocurrió un error
+                # Limpiar recursos en caso de error
+                if cookie_file and os.path.exists(cookie_file):
+                    try: os.unlink(cookie_file)
+                    except: pass
                 if temp_dir and os.path.exists(temp_dir):
-                    try:
-                        shutil.rmtree(temp_dir)
-                        print(f"Limpiada carpeta temporal: {temp_dir}")
-                    except:
-                        pass
+                    try: shutil.rmtree(temp_dir)
+                    except: pass
                 
-                # Estrategia de recuperación inteligente
-                if "not available" in error_msg.lower() or "region" in error_msg.lower():
-                    print("⚠ Video no disponible en la región. Activando proxy...")
-                    self.use_proxy.set(True)
-                elif "proxy" in error_msg.lower():
-                    print("⚠ Error de proxy. Intentando sin proxy...")
-                    self.use_proxy.set(False)
-                    used_proxies = []
+                # Estrategia de recuperación inteligente si está activada
+                if self.auto_retry_proxy.get():
+                    if "not available" in error_msg.lower() or "region" in error_msg.lower() or "geo-restricted" in error_msg.lower():
+                        print("⚠ Video no disponible. Activando proxy para reintentar...")
+                        self.use_proxy.set(True)
+                    elif ("proxy" in error_msg.lower() or "failed to send request" in error_msg.lower()) and self.use_proxy.get():
+                        print("⚠ Error de proxy. Desactivando proxy y reintentando...")
+                        self.use_proxy.set(False)
+                        used_proxies = [] # Resetear proxies usados
                 
                 current_try += 1
                 if current_try < max_retries:
                     retry_delay = 2 + (current_try * 2)
+                    self.master.after(0, lambda: self.status_label.configure(text=f"Error. Reintentando en {retry_delay}s..."))
                     print(f"🔄 Reintentando en {retry_delay} segundos...")
                     time.sleep(retry_delay)
                 else:
                     final_error = f"Error después de {max_retries} intentos. Último error: {error_msg}"
-                    self.master.after(0, lambda: self.status_label.configure(text=f"❌ Error: {final_error}"))
+                    self.master.after(0, lambda: self.status_label.configure(text=f"❌ Error fatal"))
                     self.master.after(0, lambda: MessageBox.showerror("Error", final_error))
                     self.master.after(0, lambda: self.download_button.configure(state='normal'))
+                    # Salir del bucle
+                    break
 
 def verify_youtube_url(url):
     """Verifica y limpia una URL de YouTube"""
@@ -940,8 +1082,11 @@ def ensure_latest_ytdlp():
         print("Verificando instalación de yt-dlp...")
         
         needs_update = True
+        # Usar la versión de la librería si no se encuentra el binario externo, aunque
+        # la intención parece ser usar el binario externo para mejor rendimiento
         if os.path.exists(ytdlp_path):
             try:
+                # Comprobar la versión instalada y actualizar
                 result = subprocess.run([ytdlp_path, '--version'], capture_output=True, text=True, check=True)
                 current_version = result.stdout.strip()
                 print(f"Versión actual: {current_version}")
@@ -951,8 +1096,10 @@ def ensure_latest_ytdlp():
                 if "yt-dlp is up to date" in update_result.stdout:
                     needs_update = False
                     print("yt-dlp está actualizado")
+                else:
+                    print("yt-dlp actualizado a la última versión.")
             except Exception as e:
-                print(f"Error verificando versión: {e}")
+                print(f"Error verificando o actualizando versión de yt-dlp: {e}")
         
         if needs_update:
             print("Descargando última versión de yt-dlp...")
@@ -964,28 +1111,27 @@ def ensure_latest_ytdlp():
                     headers = {'User-Agent': user_agent}
                     req = urllib.request.Request(ytdlp_url, headers=headers)
                     with urllib.request.urlopen(req) as response, open(ytdlp_path, 'wb') as out_file:
-                        out_file.write(response.read())
+                        # Descarga segura
+                        shutil.copyfileobj(response, out_file)
                     success = True
-                    print("yt-dlp actualizado correctamente")
+                    print("yt-dlp actualizado/descargado correctamente")
                     break
                 except Exception as e:
                     print(f"Intento fallido con User-Agent: {str(e)}")
                     continue
             
             if not success:
-                raise Exception("No se pudo actualizar yt-dlp después de múltiples intentos")
-        
-        subprocess.run([ytdlp_path, '--version'], check=True, capture_output=True)
-        
-    except Exception as e:
-        print(f"Error en la actualización de yt-dlp: {e}")
-        print("Continuando con la versión existente...")
-        
-    config_path = os.path.join(os.path.expanduser("~"), "yt-dlp.conf")
-    if not os.path.exists(config_path):
-        try:
-            with open(config_path, 'w') as f:
-                f.write("""# Configuración global de yt-dlp
+                # Si falla, advertir pero permitir que el programa continúe usando la librería instalada
+                print("ADVERTENCIA: No se pudo descargar el binario de yt-dlp. Se usará la versión de Python.")
+
+        # La configuración global se deja como está, ya que la lógica en download_video la ignora/sobrescribe
+        config_path = os.path.join(os.path.expanduser("~"), "yt-dlp.conf")
+        if not os.path.exists(config_path):
+             try:
+                 with open(config_path, 'w') as f:
+                     # Esta configuración es principalmente para el uso de línea de comandos, 
+                     # pero no molesta si existe.
+                     f.write("""# Configuración global de yt-dlp
 --force-ipv4
 --no-check-certificates
 --prefer-ffmpeg
@@ -997,12 +1143,18 @@ def ensure_latest_ytdlp():
 --buffer-size 16K
 --no-warnings
 """)
-            print("Archivo de configuración de yt-dlp creado")
-        except Exception as e:
-            print(f"Error creando archivo de configuración: {e}")
+                 print("Archivo de configuración de yt-dlp creado")
+             except Exception as e:
+                 print(f"Error creando archivo de configuración: {e}")
+
+    except Exception as e:
+        print(f"Error general en la inicialización de yt-dlp: {e}")
+        print("Continuando con la versión existente/instalada...")
 
 if __name__ == '__main__':
-    ensure_latest_ytdlp()
+    # Ejecutar la verificación en un hilo para no bloquear el GUI al inicio
+    threading.Thread(target=ensure_latest_ytdlp, daemon=True).start()
+    
     # Usamos la clase principal de CustomTkinter para la ventana
     root = ctk.CTk()
     app = MultiDownloaderGUI(root)
