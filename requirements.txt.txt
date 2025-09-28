@@ -1,0 +1,3 @@
+yt-dlp
+Pillow
+browser-cookie3
