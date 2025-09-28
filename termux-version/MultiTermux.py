@@ -127,6 +127,8 @@ def get_proxies_from_api(proxy_type='http', timeout=10000, country='all', ssl='a
                 proxies = [p.strip() for p in proxies_text.split('\n') if p.strip()]
                 print(f"{OPTION_COLOR}✅ Obtenidos {len(proxies)} proxies de la API{RESET_COLOR}")
                 return proxies
+            else:
+                print(f"{WARNING_COLOR}API no devolvió proxies.{RESET_COLOR}")
         else:
             print(f"{ERROR_COLOR}❌ Error en la API: {response.status_code}{RESET_COLOR}")
             
@@ -163,6 +165,7 @@ def test_proxy(proxy, proxy_type='http', test_url='http://httpbin.org/ip'):
         if proxy_type == 'http':
             proxies = {'http': f'http://{proxy}', 'https': f'http://{proxy}'}
         elif proxy_type == 'socks5':
+            # Nota: Requests necesita la librería 'requests[socks]' para esto, que ya debería estar en Termux.
             proxies = {'http': f'socks5://{proxy}', 'https': f'socks5://{proxy}'}
         
         response = requests.get(test_url, proxies=proxies, timeout=10)
@@ -178,7 +181,9 @@ def save_cookies_to_file(cookies):
     temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
     try:
         temp_file.write("# Netscape HTTP Cookie File\n")
+        # Usamos el formato Netscape
         for cookie in cookies:
+            # Reconstrucción del formato Netscape
             domain = cookie.domain.lstrip('.')
             secure = "TRUE" if cookie.secure else "FALSE"
             expiration = str(int(cookie.expires)) if cookie.expires else "0"
@@ -316,7 +321,7 @@ class DownloaderCLI:
         
         # Alternar uso de Proxy
         use_proxy_input = self.input_prompt(f"¿Deseas USAR Proxy? ({'S' if self.use_proxy else 'N'})", 
-                                            'S' if self.use_proxy else 'N').upper()
+                                             'S' if self.use_proxy else 'N').upper()
         self.use_proxy = use_proxy_input == 'S'
         
         if self.use_proxy:
@@ -492,6 +497,7 @@ class DownloaderCLI:
                     'nocheckcertificate': True,
                     'ignoreerrors': True,
                     'no_warnings': True,
+                    'postprocessors': [], # Inicializar la lista de post-procesadores
                 }
                 
                 # CONFIGURACIÓN DE PROXY
@@ -529,17 +535,31 @@ class DownloaderCLI:
                     if fmt_res.isdigit():
                          ydl_opts.update({'format': f'bestvideo[height<={fmt_res}][ext={video_format}]/bestvideo'})
                     else: # 'mejor'
-                        ydl_opts.update({'format': f'bestvideo[ext={video_format}]/bestvideo'})
+                         ydl_opts.update({'format': f'bestvideo[ext={video_format}]/bestvideo'})
                     
                 else: # Video + Audio (Descarga combinada)
                     fmt_res = video_resolution.replace('p', '')
-                    if fmt_res.isdigit():
-                         # Mejor video hasta la resolución + Mejor audio, luego merge a MP4/webm/mkv
-                        ydl_opts.update({'format': f'bestvideo[height<={fmt_res}]+bestaudio/best[ext={video_format}]/best'})
-                    else: # 'mejor'
-                        ydl_opts.update({'format': f'bestvideo+bestaudio/best[ext={video_format}]/best'})
                     
+                    # 1. Aplicar el formato de audio estable (+251) y la restricción de resolución/extensión.
+                    if fmt_res.isdigit():
+                         # Mejor video hasta la resolución + Audio estable (251), luego merge al formato de usuario
+                         ydl_opts['format'] = f'bestvideo[height<={fmt_res}][ext={video_format}]+251/best'
+                    else: # 'mejor'
+                         # Mejor video y audio disponible, pero forzando el audio estable 251.
+                         ydl_opts['format'] = f'bestvideo[ext={video_format}]+251/best'
+                         
+                    # 2. Agregar post-procesador para forzar la fusión (muxing) al formato deseado.
+                    ydl_opts['postprocessors'].append({
+                        'key': 'FFmpegVideoRemuxer',
+                        'preferedformat': video_format # Usa el formato elegido por el usuario (mp4, mkv, webm)
+                    })
+                    # 3. Eliminar el formato de salida si ya estamos usando FFmpegVideoRemuxer para evitar conflictos.
+                    if 'outtmpl' in ydl_opts:
+                        # Si usamos remuxer, el archivo final no puede tener extensión en outtmpl.
+                        ydl_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s') 
+                         
                 print(f"{INFO_COLOR}Formato Final Seleccionado: {ydl_opts.get('format')}{RESET_COLOR}")
+                print(f"{INFO_COLOR}Formato de Salida para Fusión: {video_format}{RESET_COLOR}")
                 
                 # EJECUTAR DESCARGA
                 with YoutubeDL(ydl_opts) as ydl:
@@ -549,14 +569,21 @@ class DownloaderCLI:
                 moved_files_count = 0
                 for filename in os.listdir(temp_dir):
                     source_path = os.path.join(temp_dir, filename)
-                    if not os.path.isfile(source_path):
+                    # Solo mover archivos que NO sean temporales
+                    if not os.path.isfile(source_path) or filename.endswith('.tmp') or filename.endswith('.part'):
                         continue
                     
-                    destination_path = os.path.join(final_output_path, filename)
+                    # Asegurarse de que el archivo final tiene la extensión correcta (ej: si remuxer se usó correctamente)
+                    final_filename = filename
+                    if not final_filename.endswith(f'.{video_format}') and not audio_only and not video_only:
+                        # Si no es audio ni video_only y no tiene la extensión de fusión, añadirla
+                        final_filename = f"{os.path.splitext(filename)[0]}.{video_format}"
+
+                    destination_path = os.path.join(final_output_path, final_filename)
                     shutil.move(source_path, destination_path)
                     moved_files_count += 1
                 
-                print(f"{OPTION_COLOR}✅ Archivo movido a: {final_output_path}{RESET_COLOR}")
+                print(f"{OPTION_COLOR}✅ Archivo(s) movido(s) a: {final_output_path}{RESET_COLOR}")
 
                 # LIMPIEZA
                 if 'cookiefile' in ydl_opts and os.path.exists(ydl_opts['cookiefile']):
@@ -564,7 +591,7 @@ class DownloaderCLI:
                 shutil.rmtree(temp_dir)
                 
                 print(f"{OPTION_COLOR}======================================================={RESET_COLOR}")
-                print(f"{OPTION_COLOR}         DESCARGA FINALIZADA CON ÉXITO! 🎉{RESET_COLOR}")
+                print(f"{OPTION_COLOR}      DESCARGA FINALIZADA CON ÉXITO! 🎉{RESET_COLOR}")
                 print(f"{OPTION_COLOR}======================================================={RESET_COLOR}")
                 
                 self.is_downloading = False
