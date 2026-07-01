@@ -87,3 +87,6 @@
 ## **Esta aplicación no contiene malware. Si el antivirus marca el ejecutable, esto es un Falso Positivo debido a que la herramienta lee cookies y maneja procesos de red avanzados (como la descarga de yt-dlp y la lectura de cookies con browser-cookie3).**
 
 * ## **Solución: Reporte el archivo como seguro a su proveedor de antivirus y añada el ejecutable a la lista de excepciones.**
+* Se Agregaron dos ficheros un start.sh
+* start.sh: plataform linux and mac
+* start.bat plataform win11 and win 10
