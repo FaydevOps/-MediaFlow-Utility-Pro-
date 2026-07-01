@@ -13,16 +13,20 @@ fi
 # 3. Activar el entorno virtual
 source env_downloader/bin/activate
 
-# 4. Actualizar pip e instalar librerías DENTRO del entorno virtual
+# 4. Actualizar pip e instalar librerías
 python3 -m pip install --upgrade pip
 python3 -m pip install -U --pre "yt-dlp[default]"
 
 if [ -f "requirements.txt" ]; then
     pip3 install -r requirements.txt
 else
-    echo "Aviso: requirements.txt no encontrado, saltando este paso."
+    echo "Aviso: requirements.txt no encontrado."
 fi
 
-# 5. Ejecutar tu herramienta en segundo plano
-echo "Iniciando MultiDownloaderv4.0.py..."
-python3 MultiDownloaderv4.0.py &
+# 5. Ejecutar la interfaz gráfica correctamente
+echo "Abriendo la interfaz gráfica de MultiDownloaderv4.0.py..."
+nohup python3 MultiDownloaderv4.0.py > /dev/null 2>&1 &
+
+# Le damos un segundo para que cargue antes de despedirnos
+sleep 1 
+echo "¡Listo! Ya puedes cerrar esta terminal si lo deseas."
