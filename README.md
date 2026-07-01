@@ -40,7 +40,7 @@
 
 ## **Opción A: Ejecutable (Recomendado para Windows/Usuarios Finales)**
 
-1. ## **Diríjase a la [Sección de Releases de GitHub](https://www.google.com/search?q=https://github.com/TuUsuario/MediaFlow-Utility/releases).**
+1. ## **Diríjase a la [Sección de Releases de GitHub](https://www.google.com/search?q=https://github.com/FaydevOps/-MediaFlow-Utility-Pro-).**
 
 2. ## **Descargue el archivo binario más reciente (MultiDownloaderPro.exe).**
 
@@ -50,7 +50,7 @@
 
 ## **Opción B: Código Fuente (Para Termux, Desarrolladores y Linux Desktop)**
 
-1. ## **Clonar e Instalar Dependencias:**    **git clone \[https://github.com/TuUsuario/MediaFlow-Utility.git\](https://github.com/TuUsuario/MediaFlow-Utility.git) cd MediaFlow-Utility \# Instalar librerías de Python (del requirements.txt) pip install \-r requirements.txt**
+1. ## **Clonar e Instalar Dependencias:**    **git clone \[https://github.com/FaydevOps/-MediaFlow-Utility-Pro-t\](https://github.com/FaydevOps/-MediaFlow-Utility-Pro-) cd MediaFlow-Utility \# Instalar librerías de Python (del requirements.txt) pip install \-r requirements.txt**
 
 2. ## **Ejecución:**
 
