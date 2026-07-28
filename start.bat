@@ -40,7 +40,7 @@ echo ===================================================
 echo.
 
 :: Usamos 'start /b' para lanzar la GUI y permitir que esta consola se cierre sola
-start /b python MultiDownloaderv4.0.py
+start /b python MultiDownloaderv2.0.py
 
 :: Le damos un segundo para que cargue la interfaz antes de cerrar la ventana negra
 timeout /t 2 >nul
