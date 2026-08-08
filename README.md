@@ -90,3 +90,6 @@
 * Se Agregaron dos ficheros un start.sh
 * start.sh: plataform linux and mac
 * start.bat plataform win11 and win 10
+
+##gui de el programa##
+<img width="904" height="957" alt="image" src="https://github.com/user-attachments/assets/4702e7e2-583c-401f-93e5-e6273dab76a9" />
